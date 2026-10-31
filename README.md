@@ -1,32 +1,34 @@
-# @kubb/plugin-playwright
+# kubb-plugin-playwright
 
-Generate typed Playwright API request helpers from an OpenAPI specification. Each helper calls `request.fetch` and returns the native Playwright response, with a typed `response.json()`.
+A community [Kubb](https://kubb.dev) plugin that generates typed Playwright API request helpers from an OpenAPI specification. Each helper calls `request.fetch` and returns the native Playwright `APIResponse`, with a typed `response.json()`.
 
-Requires Node.js 22 or newer, Kubb `^5.1.0`, and Playwright `^1.63.0`. Playwright 1.63 is the minimum supported version.
+Requires Node.js 22.22 or newer, Kubb 5.15 or newer, and `@playwright/test` 1.63 or newer.
 
 ## Installation
 
-Install the plugin, its TypeScript dependency, and Playwright alongside Kubb and the OpenAPI adapter:
+With the Kubb CLI, once the plugin is listed in the [Kubb registry](https://kubb.dev/extensions):
 
 ```bash
-bun add -d kubb @kubb/adapter-oas @kubb/plugin-ts @kubb/plugin-playwright '@playwright/test@^1.63.0'
+npx kubb add ericlm/kubb-plugin-playwright
+```
+
+Or install it yourself, next to Kubb, the OpenAPI adapter, the TypeScript plugin, and Playwright:
+
+```bash
+pnpm add -D kubb @kubb/adapter-oas @kubb/plugin-ts kubb-plugin-playwright @playwright/test
 # or
-pnpm add -D kubb @kubb/adapter-oas @kubb/plugin-ts @kubb/plugin-playwright '@playwright/test@^1.63.0'
-# or
-npm install --save-dev kubb @kubb/adapter-oas @kubb/plugin-ts @kubb/plugin-playwright '@playwright/test@^1.63.0'
-# or
-yarn add -D kubb @kubb/adapter-oas @kubb/plugin-ts @kubb/plugin-playwright '@playwright/test@^1.63.0'
+npm install --save-dev kubb @kubb/adapter-oas @kubb/plugin-ts kubb-plugin-playwright @playwright/test
 ```
 
 ## Configuration
 
-Keep `pluginTs()` in the configuration. The default output contains types in `src/gen/types` and request helpers in `src/gen/playwright`.
+Keep `pluginTs()` in the plugins array. The default output puts types in `src/gen/types` and request helpers in `src/gen/playwright`.
 
 ```typescript [kubb.config.ts]
 import { adapterOas } from '@kubb/adapter-oas'
-import { pluginPlaywright } from '@kubb/plugin-playwright'
 import { pluginTs } from '@kubb/plugin-ts'
 import { defineConfig } from 'kubb/config'
+import { pluginPlaywright } from 'kubb-plugin-playwright'
 
 export default defineConfig({
   input: './petStore.yaml',
@@ -36,11 +38,11 @@ export default defineConfig({
 })
 ```
 
-Run `pnpm exec kubb generate` to generate the files.
+Then run `npx kubb generate`.
 
 ## Usage
 
-The following call uses the [PetStore example specification](https://github.com/kubb-labs/plugins/blob/main/examples/playwright/petStore.yaml). Point the context's `baseURL` at a running API. A standalone request context does not launch a browser.
+The call below uses the [PetStore specification](https://github.com/Ericlm/kubb-plugin-playwright/blob/main/tests/petstore/petStore.yaml) from this repository. Point the context `baseURL` at a running API. A standalone request context does not launch a browser.
 
 ```typescript [petStore.ts]
 import { request as playwright } from '@playwright/test'
@@ -62,10 +64,18 @@ try {
 
 ## Documentation
 
-- [Overview and request examples](https://kubb.dev/extensions/kubb-labs/plugin-playwright)
-- [Plugin options](https://kubb.dev/extensions/kubb-labs/plugin-playwright/options)
-- [PetStore example and HTTP tests](https://github.com/kubb-labs/plugins/tree/main/examples/playwright), which start their own local server without a browser
+- [Overview](https://kubb.dev/extensions/ericlm/kubb-plugin-playwright) and [options](https://kubb.dev/extensions/ericlm/kubb-plugin-playwright/options) on kubb.dev, built from the [`docs/`](https://github.com/Ericlm/kubb-plugin-playwright/tree/main/docs) folder
+- [PetStore HTTP tests](https://github.com/Ericlm/kubb-plugin-playwright/tree/main/tests/petstore), which start a local server and call the generated helpers through a real request context
+
+## Development
+
+```bash
+pnpm install
+pnpm test       # generates the PetStore example, then runs vitest
+pnpm typecheck
+pnpm build
+```
 
 ## License
 
-[MIT](https://github.com/kubb-labs/plugins/blob/main/LICENSE)
+[MIT](https://github.com/Ericlm/kubb-plugin-playwright/blob/main/LICENSE)
