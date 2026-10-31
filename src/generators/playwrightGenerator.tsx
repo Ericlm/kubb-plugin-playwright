@@ -1,9 +1,9 @@
-import { getOperationParameters, operationFileEntry, resolveDependencyOperationFile } from '@internals/shared'
 import { pluginTsName } from '@kubb/plugin-ts'
 import { File, jsxRenderer } from 'kubb/jsx'
 import { ast, defineGenerator } from 'kubb/kit'
 import { Request } from '../components/Request.tsx'
 import type { PluginPlaywright } from '../types.ts'
+import { getParameters } from '../utils/parameters.ts'
 
 /**
  * Emits typed HTTP helpers with OpenAPI parameters, JSON and form bodies, and native fetch options.
@@ -30,21 +30,19 @@ export const playwrightGenerator = defineGenerator<PluginPlaywright>({
 
     const tsResolver = driver.getResolver(pluginTsName)
     const responseType = tsResolver.response.response(node)
-    const { path, query, header } = getOperationParameters(node)
-    const pathType = path[0] ? tsResolver.param.path(node, path[0]) : undefined
-    const queryType = query[0] ? tsResolver.param.query(node, query[0]) : undefined
-    const headersType = header[0] ? tsResolver.param.headers(node, header[0]) : undefined
+    const [path] = getParameters(node, 'path')
+    const [query] = getParameters(node, 'query')
+    const [header] = getParameters(node, 'header')
+    const pathType = path ? tsResolver.param.path(node, path) : undefined
+    const queryType = query ? tsResolver.param.query(node, query) : undefined
+    const headersType = header ? tsResolver.param.headers(node, header) : undefined
     const bodyType = content?.schema ? tsResolver.response.body(node) : undefined
     const importedTypeNames = [responseType, pathType, queryType, headersType, bodyType].filter((name) => name !== undefined)
-    const file = resolver.file({ ...operationFileEntry(node, node.operationId), root, output, group: group ?? undefined })
-    const fileTs = resolveDependencyOperationFile({
-      cache: ctx.cache,
-      node,
-      resolver: tsResolver,
-      root,
-      output: pluginTs.options?.output ?? output,
-      group: pluginTs.options?.group,
-    })
+    const entry = { name: node.operationId, extname: '.ts', tag: node.tags[0] ?? 'default', path: node.path } as const
+    const file = resolver.file({ ...entry, root, output, group: group ?? undefined })
+    const fileTs = ctx.memo(`${pluginTsName}:operationFile:${node.operationId}`, () =>
+      tsResolver.file({ ...entry, root, output: pluginTs.options?.output ?? output, group: pluginTs.options?.group ?? undefined }),
+    )
 
     return (
       <File

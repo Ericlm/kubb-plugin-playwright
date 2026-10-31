@@ -1,4 +1,3 @@
-import { createGroupConfig } from '@internals/shared'
 import { pluginTsName } from '@kubb/plugin-ts'
 import { definePlugin, Resolver } from 'kubb/kit'
 import { playwrightGenerator } from './generators/playwrightGenerator.tsx'
@@ -27,7 +26,7 @@ export const pluginPlaywright = definePlugin<PluginPlaywright>((options) => ({
       const resolver = options.resolver ? Resolver.merge(resolverPlaywright, options.resolver) : resolverPlaywright
       ctx.setOptions({
         output: options.output ?? { path: 'playwright', barrel: { type: 'named' } },
-        group: createGroupConfig(options.group),
+        group: options.group ?? null,
         exclude: options.exclude ?? [],
         include: options.include,
         override: options.override ?? [],

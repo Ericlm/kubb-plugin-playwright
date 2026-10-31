@@ -1,6 +1,6 @@
-import { getRequestGroupOptionality } from '@internals/shared'
 import { File, Function, type KubbReactNode } from 'kubb/jsx'
 import type { ast } from 'kubb/kit'
+import { getParameters } from '../utils/parameters.ts'
 
 type Props = {
   name: string
@@ -25,7 +25,9 @@ function isNativeValue({ schema, types = ['string', 'number', 'integer', 'boolea
  * Prints a request that returns Playwright's response without reading its body.
  */
 export function Request({ name, node, responseType, pathType, queryType, headersType, bodyType, contentType, baseURL }: Props): KubbReactNode {
-  const { hasRequiredPath, hasRequiredQuery, hasRequiredHeader } = getRequestGroupOptionality(node)
+  const hasRequiredPath = getParameters(node, 'path').some((param) => param.required)
+  const hasRequiredQuery = getParameters(node, 'query').some((param) => param.required)
+  const hasRequiredHeader = getParameters(node, 'header').some((param) => param.required)
   const names = ['request']
   const types = ['request: APIRequestContext']
   for (const [group, type, required] of [
