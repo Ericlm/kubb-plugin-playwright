@@ -1,0 +1,22 @@
+{
+  "name": "kubb-plugin-playwright",
+  "version": "0.1.0",
+  "description": "Generate typed Playwright API request helpers from OpenAPI with Kubb.",
+  "license": "MIT",
+  "author": "Éric Le Maître",
+  "type": "module",
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "generate:petstore": "kubb generate --config tests/petstore/kubb.config.ts",
+    "test": "pnpm generate:petstore && vitest run"
+  },
+  "engines": {
+    "node": ">=22.22"
+  },
+  "packageManager": "pnpm@11.24.0"
+}

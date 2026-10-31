@@ -1,0 +1,850 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { join, relative } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pluginTs } from '@kubb/plugin-ts'
+import { createKubb, defineConfig } from 'kubb'
+import { ast, Diagnostics } from 'kubb/kit'
+import ts from 'typescript'
+import { expect, onTestFinished, test, vi } from 'vitest'
+import { format } from '#mocks'
+import { type Options, pluginPlaywright } from './index.ts'
+
+const responses = {
+  '200': {
+    description: 'Pets',
+    content: {
+      'application/json': {
+        schema: {
+          type: 'array',
+          items: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } },
+        },
+      },
+    },
+  },
+}
+const getPets = { operationId: 'getPets', responses }
+const getPetById = {
+  operationId: 'getPetById',
+  parameters: [{ name: 'petId', in: 'path', required: true, schema: { type: 'string' } }],
+  responses,
+}
+const petBody = { type: 'object', required: ['name'], properties: { name: { type: 'string' } } }
+const addPet = {
+  operationId: 'addPet',
+  requestBody: { required: true, content: { 'application/json': { schema: petBody } } },
+  responses,
+}
+
+async function generate({
+  paths = { '/pets': { get: getPets } },
+  tsOptions,
+  ...options
+}: { paths?: Record<string, unknown>; tsOptions?: Parameters<typeof pluginTs>[0] } & Options = {}) {
+  const root = await mkdtemp(fileURLToPath(new URL('../.test-', import.meta.url)))
+  onTestFinished(() => rm(root, { recursive: true, force: true }))
+  using kubb = createKubb(
+    defineConfig({
+      root,
+      input: {
+        openapi: '3.0.3',
+        info: { title: 'Pets', version: '1.0.0' },
+        servers: [{ url: 'https://ignored.example.com' }],
+        paths,
+      },
+      output: { path: 'generated', defaultBanner: false, format: false, lint: false },
+      plugins: [pluginTs(tsOptions), pluginPlaywright(options)],
+    }),
+  )
+  const result = await kubb.build()
+  expect(Diagnostics.hasError(result.diagnostics)).toBe(false)
+  const files = result.files.filter((file) => file.path.includes('/playwright/') && file.baseName !== 'index.ts').map((file) => file.baseName)
+  return { root, files, generatedFiles: result.files.map((file) => relative(join(root, 'generated'), file.path)) }
+}
+
+async function typecheck({ root, source }: { root: string; source: string }) {
+  const usagePath = join(root, 'usage.ts')
+  await writeFile(usagePath, source)
+  const program = ts.createProgram([usagePath], {
+    noEmit: true,
+    strict: true,
+    skipLibCheck: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    allowImportingTsExtensions: true,
+    types: [],
+  })
+  expect(ts.getPreEmitDiagnostics(program).map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'))).toStrictEqual([])
+}
+
+async function loadHelper({ root, name }: { root: string; name: string }) {
+  return import(/* @vite-ignore */ pathToFileURL(join(root, 'generated/playwright', `${name}.ts`)).href)
+}
+
+test('generates a GET helper with a required context and a typed native response', async () => {
+  const { root, files } = await generate()
+  const source = await readFile(join(root, 'generated/playwright/pwGetPets.ts'), 'utf8')
+  expect(files).toStrictEqual(['pwGetPets.ts'])
+  expect(await format(source)).toMatchInlineSnapshot(`
+    "import type { GetPetsResponse } from '../types/GetPets'
+    import type { APIRequestContext, APIResponse } from '@playwright/test'
+
+    export function pwGetPets({
+      request,
+      options,
+    }: {
+      request: APIRequestContext
+      options?: Omit<NonNullable<Parameters<APIRequestContext['fetch']>[1]>, 'method'>
+    }): Promise<APIResponse<GetPetsResponse>> {
+      return request.fetch<GetPetsResponse>('/pets', {
+        ...options,
+        method: 'GET',
+      })
+    }
+    "
+  `)
+
+  await typecheck({
+    root,
+    source: `import type { APIRequestContext, APIResponse } from '@playwright/test'
+import type { GetPetsResponse } from './generated/types/GetPets'
+import { pwGetPets } from './generated/playwright/pwGetPets'
+
+declare const request: APIRequestContext
+const response = await pwGetPets({ request })
+const typedResponse: APIResponse<GetPetsResponse> = response
+const pets = await response.json()
+const names: Array<string> = pets.map(pet => pet.name)
+// @ts-expect-error The context is required.
+pwGetPets({})
+// @ts-expect-error The argument is required.
+pwGetPets()
+// @ts-expect-error OpenAPI declares name as a string.
+const invalid: number = pets[0]!.name
+`,
+  })
+  const { pwGetPets } = await loadHelper({ root, name: 'pwGetPets' })
+  const response = { json: vi.fn() }
+  const request = { fetch: vi.fn().mockResolvedValue(response) }
+  expect(await pwGetPets({ request })).toBe(response)
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', { method: 'GET' })
+  expect(response.json).not.toHaveBeenCalled()
+})
+
+test('requires the OpenAPI path type and preserves the typed native response', async () => {
+  const { root } = await generate({ paths: { '/pets/{petId}': { get: getPetById } } })
+  const source = await readFile(join(root, 'generated/playwright/pwGetPetById.ts'), 'utf8')
+  expect(await format(source)).toMatchInlineSnapshot(`
+    "import type { GetPetByIdResponse, GetPetByIdPath } from '../types/GetPetById'
+    import type { APIRequestContext, APIResponse } from '@playwright/test'
+
+    export function pwGetPetById({
+      request,
+      path,
+      options,
+    }: {
+      request: APIRequestContext
+      path: GetPetByIdPath
+      options?: Omit<NonNullable<Parameters<APIRequestContext['fetch']>[1]>, 'method'>
+    }): Promise<APIResponse<GetPetByIdResponse>> {
+      return request.fetch<GetPetByIdResponse>('/pets/' + encodeURIComponent(String(path['petId'])), {
+        ...options,
+        method: 'GET',
+      })
+    }
+    "
+  `)
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwGetPetById } from './generated/playwright/pwGetPetById'
+declare const request: APIRequestContext
+const response = await pwGetPetById({ request, path: { petId: '123' } })
+const pets = await response.json()
+const names: Array<string> = pets.map(pet => pet.name)
+// @ts-expect-error The path group is required.
+pwGetPetById({ request })
+// @ts-expect-error The path parameter is required.
+pwGetPetById({ request, path: {} })
+// @ts-expect-error The path parameter must be a string.
+pwGetPetById({ request, path: { petId: 123 } })
+// @ts-expect-error The context is still required.
+pwGetPetById({ path: { petId: '123' } })
+// @ts-expect-error The JSON response stays typed.
+const invalid: number = pets[0]!.name
+`,
+  })
+  const { pwGetPetById } = await loadHelper({ root, name: 'pwGetPetById' })
+  const response = { json: vi.fn() }
+  const request = { fetch: vi.fn().mockResolvedValue(response) }
+  expect(await pwGetPetById({ request, path: { petId: 'a/b' } })).toBe(response)
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets/a%2Fb', { method: 'GET' })
+  expect(response.json).not.toHaveBeenCalled()
+})
+
+test('encodes multiple path values and keeps their OpenAPI property names', async () => {
+  const { root } = await generate({
+    paths: {
+      '/owners/{ownerId}/pets/{pet-id}.json': {
+        get: {
+          ...getPets,
+          parameters: [
+            { name: 'ownerId', in: 'path', required: true, schema: { type: 'integer' } },
+            { name: 'pet-id', in: 'path', required: true, schema: { type: 'string' } },
+          ],
+        },
+      },
+    },
+  })
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwGetPets } from './generated/playwright/pwGetPets'
+declare const request: APIRequestContext
+pwGetPets({ request, path: { ownerId: 42, 'pet-id': '123' } })
+// @ts-expect-error The owner ID must be a number.
+pwGetPets({ request, path: { ownerId: '42', 'pet-id': '123' } })
+// @ts-expect-error Both path parameters are required.
+pwGetPets({ request, path: { ownerId: 42 } })
+// @ts-expect-error OpenAPI property names are not renamed.
+pwGetPets({ request, path: { ownerId: 42, petId: '123' } })
+`,
+  })
+  const { pwGetPets } = await loadHelper({ root, name: 'pwGetPets' })
+  const request = { fetch: vi.fn() }
+  await pwGetPets({ request, path: { ownerId: 42, 'pet-id': 'a/b ?#%&=+é🐾' } })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/owners/42/pets/a%2Fb%20%3F%23%25%26%3D%2B%C3%A9%F0%9F%90%BE.json', { method: 'GET' })
+})
+
+test.each([
+  { baseURL: undefined, expected: '/pets/a%2Fb' },
+  { baseURL: '', expected: '/pets/a%2Fb' },
+  { baseURL: 'https://api.example.com/v1', expected: 'https://api.example.com/v1/pets/a%2Fb' },
+  { baseURL: 'https://api.example.com/v1/', expected: 'https://api.example.com/v1/pets/a%2Fb' },
+])('joins baseURL $baseURL with the encoded path', async ({ baseURL, expected }) => {
+  const { root } = await generate({ baseURL, paths: { '/pets/{petId}': { get: getPetById } } })
+  const { pwGetPetById } = await loadHelper({ root, name: 'pwGetPetById' })
+  const request = { fetch: vi.fn() }
+  await pwGetPetById({ request, path: { petId: 'a/b' } })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith(expected, { method: 'GET' })
+})
+
+test('escapes literal URL text and unusual parameter names as TypeScript strings', async () => {
+  const { root } = await generate({
+    paths: {
+      '/pets`/{pet"id}/$fixed': {
+        get: {
+          ...getPets,
+          parameters: [{ name: 'pet"id', in: 'path', required: true, schema: { type: 'string' } }],
+        },
+      },
+    },
+  })
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwGetPets } from './generated/playwright/pwGetPets'
+declare const request: APIRequestContext
+pwGetPets({ request, path: { 'pet"id': '123' } })
+`,
+  })
+  const { pwGetPets } = await loadHelper({ root, name: 'pwGetPets' })
+  const request = { fetch: vi.fn() }
+  await pwGetPets({ request, path: { 'pet"id': 'a/b' } })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets`/a%2Fb/$fixed', { method: 'GET' })
+})
+
+test.each([
+  { queryRequired: false, headerRequired: false },
+  { queryRequired: true, headerRequired: false },
+  { queryRequired: false, headerRequired: true },
+  { queryRequired: true, headerRequired: true },
+])('respects required groups: query=$queryRequired, headers=$headerRequired', async ({ queryRequired, headerRequired }) => {
+  const { root } = await generate({
+    paths: {
+      '/pets': {
+        get: {
+          ...getPets,
+          parameters: [
+            { name: 'status', in: 'query', required: queryRequired, schema: { type: 'array', items: { type: 'string', enum: ['available', 'pending'] } } },
+            { name: 'limit', in: 'query', schema: { type: 'integer' } },
+            { name: 'x-limit', in: 'header', required: headerRequired, schema: { type: 'integer' } },
+            { name: 'x-label', in: 'header', schema: { type: 'string' } },
+          ],
+        },
+      },
+    },
+  })
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwGetPets } from './generated/playwright/pwGetPets'
+declare const request: APIRequestContext
+const response = await pwGetPets({ request, query: { status: ['available', 'pending'] }, headers: { 'x-limit': 0 } })
+const pets = await response.json()
+const names: Array<string> = pets.map(pet => pet.name)
+${queryRequired ? '// @ts-expect-error The query group is required.' : ''}
+pwGetPets({ request, headers: { 'x-limit': 1 } })
+${queryRequired ? '// @ts-expect-error The status parameter is required.' : ''}
+pwGetPets({ request, query: {}, headers: { 'x-limit': 1 } })
+${headerRequired ? '// @ts-expect-error The headers group is required.' : ''}
+pwGetPets({ request, query: { status: [] } })
+${headerRequired ? '// @ts-expect-error The x-limit header is required.' : ''}
+pwGetPets({ request, query: { status: [] }, headers: {} })
+// @ts-expect-error Query array items must match the OpenAPI enum.
+pwGetPets({ request, query: { status: ['invalid'] }, headers: { 'x-limit': 1 } })
+// @ts-expect-error Header values retain their OpenAPI types before serialization.
+pwGetPets({ request, query: { status: [] }, headers: { 'x-limit': '1' } })
+// @ts-expect-error Optional query members retain their OpenAPI types.
+pwGetPets({ request, query: { status: [], limit: '1' }, headers: { 'x-limit': 1 } })
+// @ts-expect-error The request context is always required.
+pwGetPets({ query: { status: [] }, headers: { 'x-limit': 1 } })
+// @ts-expect-error The native JSON response remains typed.
+const invalid: number = pets[0]!.name
+`,
+  })
+  const { pwGetPets } = await loadHelper({ root, name: 'pwGetPets' })
+  const request = { fetch: vi.fn() }
+  await pwGetPets({
+    request,
+    ...(queryRequired ? { query: { status: ['available'] } } : {}),
+    ...(headerRequired ? { headers: { 'x-limit': 0 } } : {}),
+  })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', {
+    method: 'GET',
+    params: new URLSearchParams(queryRequired ? 'status=available' : ''),
+    headers: headerRequired ? { 'x-limit': '0' } : {},
+  })
+})
+
+test('serializes query arrays as repeated keys and omits nullish values', async () => {
+  const { root } = await generate({
+    baseURL: 'https://api.example.com/v1/',
+    paths: {
+      '/pets/{petId}': {
+        get: {
+          ...getPetById,
+          parameters: [
+            ...getPetById.parameters,
+            { name: 'filter[name][]', in: 'query', schema: { type: 'array', items: { type: 'string' } } },
+            { name: 'offset', in: 'query', schema: { type: 'integer' } },
+            { name: 'active', in: 'query', schema: { type: 'boolean' } },
+            { name: 'empty', in: 'query', schema: { type: 'string' } },
+            { name: 'missing', in: 'query', schema: { type: 'string' } },
+            { name: 'nullable', in: 'query', schema: { type: 'string', nullable: true } },
+            { name: 'tags', in: 'query', schema: { type: 'array', items: { type: 'string' } } },
+          ],
+        },
+      },
+    },
+  })
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwGetPetById } from './generated/playwright/pwGetPetById'
+declare const request: APIRequestContext
+pwGetPetById({ request, path: { petId: 'a/b' }, query: { 'filter[name][]': ['a/b'], offset: 0, active: false, empty: '', missing: undefined, nullable: null, tags: [] } })
+// @ts-expect-error The query-only operation does not declare headers.
+pwGetPetById({ request, path: { petId: 'a/b' }, headers: {} })
+`,
+  })
+  const { pwGetPetById } = await loadHelper({ root, name: 'pwGetPetById' })
+  const query = {
+    'filter[name][]': ['a/b', ' ?#%&=+é🐾'],
+    offset: 0,
+    active: false,
+    empty: '',
+    missing: undefined,
+    nullable: null,
+    tags: [],
+  }
+  const response = { json: vi.fn() }
+  const request = { fetch: vi.fn().mockResolvedValue(response) }
+  expect(await pwGetPetById({ request, path: { petId: 'a/b' }, query })).toBe(response)
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('https://api.example.com/v1/pets/a%2Fb', {
+    method: 'GET',
+    params: new URLSearchParams([
+      ['filter[name][]', 'a/b'],
+      ['filter[name][]', ' ?#%&=+é🐾'],
+      ['offset', '0'],
+      ['active', 'false'],
+      ['empty', ''],
+    ]),
+  })
+  expect(request.fetch.mock.calls[0]![1].params.toString()).toBe(
+    'filter%5Bname%5D%5B%5D=a%2Fb&filter%5Bname%5D%5B%5D=+%3F%23%25%26%3D%2B%C3%A9%F0%9F%90%BE&offset=0&active=false&empty=',
+  )
+  expect(response.json).not.toHaveBeenCalled()
+})
+
+test('preserves header names, stringifies values, and omits nullish values', async () => {
+  const { root } = await generate({
+    paths: {
+      '/pets': {
+        get: {
+          ...getPets,
+          parameters: [
+            { name: 'X-Request-ID', in: 'header', schema: { type: 'string' } },
+            { name: 'x-count', in: 'header', schema: { type: 'integer' } },
+            { name: 'x-active', in: 'header', schema: { type: 'boolean' } },
+            { name: 'x-empty', in: 'header', schema: { type: 'string' } },
+            { name: 'x-missing', in: 'header', schema: { type: 'string' } },
+            { name: 'x-nullable', in: 'header', schema: { type: 'string', nullable: true } },
+          ],
+        },
+      },
+    },
+  })
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwGetPets } from './generated/playwright/pwGetPets'
+declare const request: APIRequestContext
+pwGetPets({ request, headers: { 'X-Request-ID': '123', 'x-count': 0, 'x-active': false, 'x-empty': '', 'x-missing': undefined, 'x-nullable': null } })
+// @ts-expect-error OpenAPI header names are not renamed.
+pwGetPets({ request, headers: { xRequestId: '123' } })
+// @ts-expect-error The headers-only operation does not declare query parameters.
+pwGetPets({ request, query: {} })
+`,
+  })
+  const { pwGetPets } = await loadHelper({ root, name: 'pwGetPets' })
+  const headers = { 'X-Request-ID': '123', 'x-count': 0, 'x-active': false, 'x-empty': '', 'x-missing': undefined, 'x-nullable': null }
+  const request = { fetch: vi.fn() }
+  await pwGetPets({ request, headers })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', {
+    method: 'GET',
+    headers: { 'X-Request-ID': '123', 'x-count': '0', 'x-active': 'false', 'x-empty': '' },
+  })
+})
+
+test.each(['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'trace'])('fixes the %s method and forwards native options', async (method) => {
+  const { root } = await generate({ paths: { '/pets': { [method]: getPets } } })
+  const { pwGetPets } = await loadHelper({ root, name: 'pwGetPets' })
+  const request = { fetch: vi.fn() }
+  await pwGetPets({ request, options: { method: 'WRONG', timeout: 0, failOnStatusCode: false, maxRetries: undefined } })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', { method: method.toUpperCase(), timeout: 0, failOnStatusCode: false, maxRetries: undefined })
+})
+
+test.each(
+  ['application/json', 'application/x-www-form-urlencoded', 'multipart/form-data'].flatMap((contentType) =>
+    [true, false].map((required) => ({ contentType, required })),
+  ),
+)('types $contentType bodies with required=$required and native options', async ({ contentType, required }) => {
+  const { root } = await generate({ paths: { '/pets': { post: { ...addPet, requestBody: { required, content: { [contentType]: { schema: petBody } } } } } } })
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwAddPet } from './generated/playwright/pwAddPet'
+declare const request: APIRequestContext
+const options: NonNullable<Parameters<typeof pwAddPet>[0]['options']> = { timeout: 0, failOnStatusCode: false, maxRetries: 1, signal: new AbortController().signal }
+const response = await pwAddPet({ request, body: { name: 'Rex' }, options })
+const names: string[] = (await response.json()).map(pet => pet.name)
+pwAddPet({ request, body: { name: 'Rex' }, options: { data: 'raw', params: new URLSearchParams('tag=a&tag=b'), headers: { 'x-id': '123' } } })
+pwAddPet({ request, body: { name: 'Rex' }, options: { form: { name: 'Rex' } } })
+pwAddPet({ request, body: { name: 'Rex' }, options: { multipart: new FormData() } })
+${required ? '// @ts-expect-error The OpenAPI body is required.' : ''}
+pwAddPet({ request })
+${required ? '// @ts-expect-error Native data does not make the OpenAPI body optional.' : ''}
+pwAddPet({ request, options: { data: 'raw' } })
+// @ts-expect-error The body must match the generated type.
+pwAddPet({ request, body: { name: 42 } })
+// @ts-expect-error The method belongs to the operation.
+pwAddPet({ request, body: { name: 'Rex' }, options: { method: 'PUT' } })
+// @ts-expect-error Native timeout is numeric.
+pwAddPet({ request, body: { name: 'Rex' }, options: { timeout: '5000' } })
+// @ts-expect-error Native headers require strings.
+pwAddPet({ request, body: { name: 'Rex' }, options: { headers: { 'x-id': 123 } } })
+`,
+  })
+  const { pwAddPet } = await loadHelper({ root, name: 'pwAddPet' })
+  const request = { fetch: vi.fn() }
+  await pwAddPet({ request, ...(required ? { body: { name: 'Rex' } } : {}) })
+  let mode = 'data'
+  if (contentType === 'application/x-www-form-urlencoded') mode = 'form'
+  if (contentType === 'multipart/form-data') mode = 'multipart'
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', { method: 'POST', [mode]: required ? { name: 'Rex' } : undefined })
+})
+
+test.each([{ body: { name: 'Rex' } }, { body: ['Rex'] }, { body: 'Rex' }, { body: '' }, { body: 0 }, { body: false }, { body: null }])(
+  'passes body $body to native JSON serialization',
+  async ({ body }) => {
+    const { root } = await generate({
+      paths: { '/pets': { post: { ...addPet, requestBody: { content: { 'application/json': { schema: {} } } } } } },
+    })
+    const { pwAddPet } = await loadHelper({ root, name: 'pwAddPet' })
+    const request = { fetch: vi.fn() }
+    await pwAddPet({ request, body })
+    expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', { method: 'POST', data: body })
+  },
+)
+
+test('leaves JSON Content-Type to Playwright and forwards an explicit header', async () => {
+  const { root } = await generate({
+    paths: {
+      '/pets': {
+        post: {
+          ...addPet,
+          requestBody: {
+            content: {
+              'application/vnd.pet+json; charset=utf-8': { schema: petBody },
+              'application/json': { schema: petBody },
+            },
+          },
+          parameters: [{ name: 'x-id', in: 'header', schema: { type: 'string' } }],
+        },
+      },
+    },
+  })
+  const { pwAddPet } = await loadHelper({ root, name: 'pwAddPet' })
+  const request = { fetch: vi.fn() }
+  await pwAddPet({ request, body: { name: 'Rex' }, headers: { 'x-id': '123' } })
+  expect(request.fetch).toHaveBeenLastCalledWith('/pets', {
+    method: 'POST',
+    data: { name: 'Rex' },
+    headers: { 'x-id': '123' },
+  })
+  await pwAddPet({ request, body: { name: 'Rex' }, headers: { 'x-id': '123' }, options: { headers: { 'cOnTeNt-TyPe': 'application/custom+json' } } })
+  expect(request.fetch).toHaveBeenLastCalledWith('/pets', {
+    method: 'POST',
+    data: { name: 'Rex' },
+    headers: { 'cOnTeNt-TyPe': 'application/custom+json' },
+  })
+})
+
+test('spreads native params and headers over generated groups, including undefined', async () => {
+  const { root } = await generate({
+    paths: {
+      '/pets': {
+        get: {
+          ...getPets,
+          parameters: [
+            { name: 'tag', in: 'query', schema: { type: 'string' } },
+            { name: 'x-id', in: 'header', schema: { type: 'string' } },
+          ],
+        },
+      },
+    },
+  })
+  const { pwGetPets } = await loadHelper({ root, name: 'pwGetPets' })
+  const request = { fetch: vi.fn() }
+  const args = { request, query: { tag: 'generated' }, headers: { 'x-id': 'generated' } }
+  await pwGetPets({ ...args, options: { params: 'tag=a&tag=b', headers: { 'x-other': 'native' } } })
+  expect(request.fetch).toHaveBeenLastCalledWith('/pets', { method: 'GET', params: 'tag=a&tag=b', headers: { 'x-other': 'native' } })
+  await pwGetPets({ ...args, options: { params: '', headers: {} } })
+  expect(request.fetch).toHaveBeenLastCalledWith('/pets', { method: 'GET', params: '', headers: {} })
+  await pwGetPets({ ...args, options: { params: undefined, headers: undefined } })
+  expect(request.fetch).toHaveBeenLastCalledWith('/pets', { method: 'GET', params: undefined, headers: undefined })
+})
+
+test('passes scalar query, string headers and JSON body directly with encoded path values', async () => {
+  const { root } = await generate({
+    paths: {
+      '/pets/{pet-id}': {
+        post: {
+          ...addPet,
+          parameters: [
+            { name: 'pet-id', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer' } },
+            { name: 'X-Request-ID', in: 'header', schema: { type: 'string' } },
+          ],
+        },
+      },
+    },
+  })
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwAddPet } from './generated/playwright/pwAddPet'
+declare const request: APIRequestContext
+pwAddPet({ request, path: { 'pet-id': 'a/b' }, query: { limit: 0 }, headers: { 'X-Request-ID': '123' }, body: { name: 'Rex' } })
+pwAddPet({ request, path: { 'pet-id': '123' }, body: { name: 'Rex' } })
+`,
+  })
+  const { pwAddPet } = await loadHelper({ root, name: 'pwAddPet' })
+  const request = { fetch: vi.fn() }
+  const query = { limit: 0 }
+  const headers = { 'X-Request-ID': '123' }
+  const body = { name: 'Rex' }
+  await pwAddPet({ request, path: { 'pet-id': 'a/b' }, query, headers, body })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets/a%2Fb', { params: query, headers, data: body, method: 'POST' })
+  expect(request.fetch.mock.calls[0]![1].params).toBe(query)
+  expect(request.fetch.mock.calls[0]![1].headers).toBe(headers)
+  expect(request.fetch.mock.calls[0]![1].data).toBe(body)
+})
+
+test.each([
+  { mode: 'empty data', options: { data: '' } },
+  { mode: 'binary data', options: { data: Buffer.from('raw') } },
+  { mode: 'form', options: { form: { name: 'Rex' } } },
+  { mode: 'multipart', options: { multipart: new FormData() } },
+])('spreads native $mode over the generated data option', async ({ options }) => {
+  const { root } = await generate({ paths: { '/pets': { post: addPet } } })
+  const { pwAddPet } = await loadHelper({ root, name: 'pwAddPet' })
+  const request = { fetch: vi.fn() }
+  await pwAddPet({ request, body: { name: 'Rex' }, options })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', { method: 'POST', data: { name: 'Rex' }, ...options })
+})
+
+test('forwards undefined native body options without restoring defaults', async () => {
+  const { root } = await generate({ paths: { '/pets': { post: addPet } } })
+  const { pwAddPet } = await loadHelper({ root, name: 'pwAddPet' })
+  const request = { fetch: vi.fn() }
+  await pwAddPet({ request, body: { name: 'Rex' }, options: { data: undefined, form: undefined, multipart: undefined, headers: {} } })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', {
+    method: 'POST',
+    data: undefined,
+    form: undefined,
+    multipart: undefined,
+    headers: {},
+  })
+})
+
+test('passes conflicting native body modes to Playwright and propagates its rejection', async () => {
+  const { root } = await generate({ paths: { '/pets': { post: addPet } } })
+  const { pwAddPet } = await loadHelper({ root, name: 'pwAddPet' })
+  const error = new Error('Only one body mode is allowed')
+  const request = { fetch: vi.fn().mockRejectedValue(error) }
+  const options = { data: 'raw', form: { name: 'Rex' } }
+  await expect(pwAddPet({ request, body: { name: 'Rex' }, options })).rejects.toBe(error)
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', { method: 'POST', ...options })
+})
+
+test.each([
+  { contentType: 'application/x-www-form-urlencoded; charset=utf-8', mode: 'form' },
+  { contentType: 'multipart/form-data', mode: 'multipart' },
+])('sends $mode fields using the first declared content type', async ({ contentType, mode }) => {
+  const schema = {
+    type: 'object',
+    properties: {
+      'pet-name': { type: 'string' },
+      tags: { type: 'array', items: { type: 'string' } },
+      count: { type: 'integer' },
+      active: { type: 'boolean' },
+      absent: { type: 'string', nullable: true },
+      missing: { type: 'string' },
+    },
+  }
+  const { root } = await generate({
+    paths: { '/pets': { post: { ...addPet, requestBody: { content: { [contentType]: { schema }, 'application/json': { schema } } } } } },
+  })
+  const { pwAddPet } = await loadHelper({ root, name: 'pwAddPet' })
+  const request = { fetch: vi.fn() }
+  await pwAddPet({
+    request,
+    body: { 'pet-name': '', tags: ['a&b', 'é'], count: 0, active: false, absent: null },
+  })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', { method: 'POST', [mode]: expect.any(FormData) })
+  expect([...request.fetch.mock.calls[0]![1][mode].entries()]).toStrictEqual([
+    ['pet-name', ''],
+    ['tags', 'a&b'],
+    ['tags', 'é'],
+    ['count', '0'],
+    ['active', 'false'],
+  ])
+})
+
+test('types binary multipart fields as Blob and passes files to Playwright', async () => {
+  const schema = { type: 'object', required: ['file'], properties: { file: { type: 'string', format: 'binary' }, description: { type: 'string' } } }
+  const { root } = await generate({
+    paths: { '/pets': { post: { ...addPet, requestBody: { required: true, content: { 'multipart/form-data': { schema } } } } } },
+  })
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwAddPet } from './generated/playwright/pwAddPet'
+declare const request: APIRequestContext
+pwAddPet({ request, body: { file: new Blob(['photo']) } })
+pwAddPet({ request, body: { file: new File(['photo'], 'pet.txt') } })
+// @ts-expect-error The binary field requires a Blob.
+pwAddPet({ request, body: { file: 'photo' } })
+// @ts-expect-error The file field is required.
+pwAddPet({ request, body: {} })
+`,
+  })
+  const { pwAddPet } = await loadHelper({ root, name: 'pwAddPet' })
+  const request = { fetch: vi.fn() }
+  const file = new File(['photo'], 'pet.txt', { type: 'text/plain' })
+  await pwAddPet({ request, body: { file, description: 'Rex' } })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', { method: 'POST', multipart: expect.any(FormData) })
+  const multipart: FormData = request.fetch.mock.calls[0]![1].multipart
+  expect(multipart.get('description')).toBe('Rex')
+  expect(multipart.get('file')).toBe(file)
+})
+
+test.each([false, true])('customizes helper exports with a custom filename=%s', async (customFile) => {
+  const name = (operationId: string) => `test${operationId[0]!.toUpperCase()}${operationId.slice(1)}`
+  const { root, files } = await generate({
+    resolver: {
+      name,
+      ...(customFile ? { file: { baseName: ({ name: operationId, extname }) => `${name(operationId)}${extname}` } } : {}),
+    },
+  })
+  const file = customFile ? 'testGetPets' : 'pwGetPets'
+  expect(files).toStrictEqual([`${file}.ts`])
+  const barrel = await readFile(join(root, 'generated/playwright/index.ts'), 'utf8')
+  expect(await format(barrel)).toContain(`export { testGetPets } from './${file}'`)
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import type { GetPetsResponse } from './generated/types/GetPets'
+import { testGetPets } from './generated/playwright'
+declare const request: APIRequestContext
+const pets: GetPetsResponse = await (await testGetPets({ request })).json()
+`,
+  })
+  const { testGetPets } = await loadHelper({ root, name: file })
+  const request = { fetch: vi.fn() }
+  await testGetPets({ request })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', { method: 'GET' })
+})
+
+test('applies operation macros in order before generating the request', async () => {
+  const { root } = await generate({
+    macros: [
+      {
+        name: 'version-path',
+        operation(node) {
+          if (ast.isHttpOperationNode(node)) return { ...node, path: `/v2${node.path}` }
+        },
+      },
+      {
+        name: 'preview-request',
+        operation(node) {
+          if (ast.isHttpOperationNode(node)) return { ...node, path: node.path.replace('/v2/', '/preview/'), method: 'POST' }
+        },
+      },
+    ],
+  })
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import type { GetPetsResponse } from './generated/types/GetPets'
+import { pwGetPets } from './generated/playwright'
+declare const request: APIRequestContext
+const pets: GetPetsResponse = await (await pwGetPets({ request })).json()
+`,
+  })
+  const { pwGetPets } = await loadHelper({ root, name: 'pwGetPets' })
+  const request = { fetch: vi.fn() }
+  await pwGetPets({ request })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/preview/pets', { method: 'POST' })
+})
+
+test.each<{ options: Options; module: string; helpers: Array<string> }>([
+  {
+    options: { output: { path: 'requests/http', barrel: { type: 'named' } } },
+    module: 'requests/http',
+    helpers: ['requests/http/pwGetPets.ts', 'requests/http/pwAddPet.ts'],
+  },
+  { options: { output: { path: 'requests.ts', mode: 'file' } }, module: 'requests', helpers: ['requests.ts'] },
+])('generates typed helpers at $options.output.path', async ({ options, module, helpers }) => {
+  const { root, generatedFiles } = await generate({ ...options, paths: { '/pets': { get: getPets, post: addPet } } })
+  expect(generatedFiles.filter((file) => file.startsWith('requests') && !file.endsWith('/index.ts')).sort()).toStrictEqual([...helpers].sort())
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwGetPets, pwAddPet } from './generated/${module}'
+declare const request: APIRequestContext
+const names: string[] = (await (await pwGetPets({ request })).json()).map(pet => pet.name)
+pwAddPet({ request, body: { name: 'Rex' } })
+`,
+  })
+  const { pwGetPets } = await import(/* @vite-ignore */ pathToFileURL(join(root, 'generated', helpers[0]!)).href)
+  const request = { fetch: vi.fn() }
+  await pwGetPets({ request })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/pets', { method: 'GET' })
+})
+
+test.each<{ group: NonNullable<Options['group']>; directory: string }>([
+  { group: { type: 'tag' }, directory: 'petStore' },
+  { group: { type: 'path' }, directory: 'animals' },
+  { group: { type: 'tag', name: ({ group }) => group.replaceAll(' ', '-') }, directory: 'pet-store' },
+])('groups helpers into $directory independently of TypeScript files', async ({ group, directory }) => {
+  const { root, generatedFiles } = await generate({
+    group,
+    paths: { '/animals/pets': { get: { ...getPets, tags: ['pet store'] } } },
+    tsOptions: { output: { path: 'models/schema' }, group: { type: 'tag', name: () => 'types' } },
+  })
+  expect(generatedFiles).toContain(`playwright/${directory}/pwGetPets.ts`)
+  expect(generatedFiles).toContain('models/schema/types/GetPets.ts')
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwGetPets } from './generated/playwright/${directory}'
+declare const request: APIRequestContext
+const names: string[] = (await (await pwGetPets({ request })).json()).map(pet => pet.name)
+`,
+  })
+  const { pwGetPets } = await loadHelper({ root, name: `${directory}/pwGetPets` })
+  const request = { fetch: vi.fn() }
+  await pwGetPets({ request })
+  expect(request.fetch).toHaveBeenCalledExactlyOnceWith('/animals/pets', { method: 'GET' })
+})
+
+test.each<{ include?: Options['include']; exclude?: Options['exclude']; expected: Array<string> }>([
+  { include: [{ type: 'tag', pattern: 'pets' }], expected: ['pwAddPet.ts', 'pwGetPets.ts'] },
+  { exclude: [{ type: 'path', pattern: '/users' }], expected: ['pwAddPet.ts', 'pwGetPets.ts'] },
+  { include: [{ type: 'method', pattern: /^get$/ }], exclude: [{ type: 'operationId', pattern: /^getPets$/ }], expected: ['pwGetUsers.ts'] },
+])('selects operations using include=$include and exclude=$exclude', async ({ include, exclude, expected }) => {
+  const { root, files } = await generate({
+    include,
+    exclude,
+    paths: {
+      '/pets': { get: { ...getPets, tags: ['pets'] }, post: { ...addPet, tags: ['pets'] } },
+      '/users': { get: { ...getPets, operationId: 'getUsers', tags: ['users'] } },
+    },
+  })
+  expect(files.sort()).toStrictEqual(expected)
+  const barrel = await format(await readFile(join(root, 'generated/playwright/index.ts'), 'utf8'))
+  for (const file of ['pwGetPets', 'pwAddPet', 'pwGetUsers']) {
+    expect(barrel.includes(`export { ${file} }`)).toBe(expected.includes(`${file}.ts`))
+  }
+})
+
+test('applies the first matching override and keeps other operations on global settings', async () => {
+  const { root, generatedFiles } = await generate({
+    paths: { '/pets': { get: getPets }, '/users': { get: { ...getPets, operationId: 'getUsers' } } },
+    baseURL: 'https://api.example.com',
+    override: [
+      {
+        type: 'operationId',
+        pattern: 'getPets',
+        options: { output: { path: 'special', mode: 'directory' }, baseURL: 'https://pets.example.com' },
+      },
+      { type: 'path', pattern: '/pets', options: { baseURL: 'https://second.example.com' } },
+    ],
+  })
+  expect(generatedFiles).toContain('special/pwGetPets.ts')
+  expect(generatedFiles).toContain('playwright/pwGetUsers.ts')
+  await typecheck({
+    root,
+    source: `
+import type { APIRequestContext } from '@playwright/test'
+import { pwGetPets } from './generated/special/pwGetPets'
+import { pwGetUsers } from './generated/playwright'
+declare const request: APIRequestContext
+const pets: string[] = (await (await pwGetPets({ request })).json()).map(pet => pet.name)
+const users: string[] = (await (await pwGetUsers({ request })).json()).map(user => user.name)
+`,
+  })
+  const { pwGetPets } = await import(/* @vite-ignore */ pathToFileURL(join(root, 'generated/special/pwGetPets.ts')).href)
+  const { pwGetUsers } = await loadHelper({ root, name: 'pwGetUsers' })
+  const request = { fetch: vi.fn() }
+  await pwGetPets({ request })
+  expect(request.fetch).toHaveBeenLastCalledWith('https://pets.example.com/pets', { method: 'GET' })
+  await pwGetUsers({ request })
+  expect(request.fetch).toHaveBeenLastCalledWith('https://api.example.com/users', { method: 'GET' })
+})
