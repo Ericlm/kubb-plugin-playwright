@@ -15,10 +15,6 @@
     "generate:petstore": "kubb generate --config tests/petstore/kubb.config.ts",
     "test": "pnpm generate:petstore && vitest run"
   },
-  "engines": {
-    "node": ">=22.22"
-  },
-  "packageManager": "pnpm@11.24.0",
   "dependencies": {
     "@kubb/kit": "^5.15.3",
     "@kubb/plugin-ts": "^5.4.0",
@@ -35,5 +31,9 @@
     "tsdown": "^0.22.14",
     "typescript": "^6.0.3",
     "vitest": "^4.1.12"
-  }
+  },
+  "engines": {
+    "node": ">=22.22"
+  },
+  "packageManager": "pnpm@11.24.0"
 }

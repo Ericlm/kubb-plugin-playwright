@@ -1,8 +1,10 @@
+import { addGenerator, defineExtension, Resolver, setMacros, setResolver } from '@kubb/kit'
 import { pluginTsName } from '@kubb/plugin-ts'
-import { definePlugin, Resolver } from 'kubb/kit'
+import { compatibility } from '../kubb-extension.json'
+import { version } from '../package.json'
 import { playwrightGenerator } from './generators/playwrightGenerator.tsx'
 import { resolverPlaywright } from './resolvers/resolverPlaywright.ts'
-import type { PluginPlaywright } from './types.ts'
+import type { PluginPlaywright, ResolverPlaywright } from './types.ts'
 
 /**
  * Identifies the Playwright plugin in the Kubb driver.
@@ -17,27 +19,35 @@ export const pluginPlaywrightName = 'plugin-playwright' satisfies PluginPlaywrig
  * Playwright handles body serialization, Content-Type, and errors. Use options for custom serialization.
  * Requires `pluginTs()` for the response types.
  */
-export const pluginPlaywright = definePlugin<PluginPlaywright>((options) => ({
-  name: pluginPlaywrightName,
-  options,
-  dependencies: [pluginTsName],
-  hooks: {
-    'kubb:plugin:setup'(ctx) {
-      const resolver = options.resolver ? Resolver.merge(resolverPlaywright, options.resolver) : resolverPlaywright
-      ctx.setOptions({
-        output: options.output ?? { path: 'playwright', barrel: { type: 'named' } },
-        group: options.group ?? null,
-        exclude: options.exclude ?? [],
-        include: options.include,
-        override: options.override ?? [],
-        baseURL: options.baseURL,
-        resolver,
-      })
-      ctx.setResolver(resolver)
-      if (options.macros?.length) ctx.setMacros(options.macros)
-      ctx.addGenerator(playwrightGenerator)
-    },
+export const pluginPlaywright = defineExtension<PluginPlaywright>({
+  kind: 'plugin',
+  meta: { name: pluginPlaywrightName, version, compatibility },
+  dependencies: { [pluginTsName]: {} },
+  setup(options) {
+    const {
+      output = { path: 'playwright', barrel: { type: 'named' } },
+      group,
+      exclude = [],
+      include,
+      override = [],
+      baseURL,
+      resolver: userResolver,
+      macros: userMacros,
+    } = options
+
+    setResolver(userResolver ? Resolver.merge<ResolverPlaywright>(resolverPlaywright, userResolver) : resolverPlaywright)
+    if (userMacros?.length) setMacros(userMacros)
+    addGenerator(playwrightGenerator)
+
+    return {
+      output,
+      group: group ?? null,
+      exclude,
+      include,
+      override,
+      baseURL,
+    }
   },
-}))
+})
 
 export default pluginPlaywright

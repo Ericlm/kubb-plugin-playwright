@@ -1,6 +1,6 @@
 import { pluginTsName } from '@kubb/plugin-ts'
-import { File, jsxRenderer } from 'kubb/jsx'
-import { ast, defineGenerator } from 'kubb/kit'
+import { File, jsxRenderer } from '@kubb/renderer-jsx'
+import { ast, defineGenerator, type NormalizedPlugin } from '@kubb/kit'
 import { Request } from '../components/Request.tsx'
 import type { PluginPlaywright } from '../types.ts'
 import { getParameters } from '../utils/parameters.ts'
@@ -25,23 +25,42 @@ export const playwrightGenerator = defineGenerator<PluginPlaywright>({
 
     const { config, resolver, driver, root } = ctx
     const { output, baseURL, group } = ctx.options
-    const pluginTs = driver.getPlugin(pluginTsName)
-    if (!pluginTs) return null
-
+    const pluginTs = ctx.requirePlugin(pluginTsName)
     const tsResolver = driver.getResolver(pluginTsName)
-    const responseType = tsResolver.response.response(node)
+    // Each plugin runs its own macros, and plugin-ts keys its type names on the method and path.
+    // Resolve those names from the operation as plugin-ts sees it, not as this plugin's macros left it.
+    const source = driver.inputNode?.operations.find((operation) => operation.operationId === node.operationId)
+    // The driver hands out normalized plugins, whose public type carries the macros `Plugin` omits.
+    const tsNode = source ? ast.applyMacros(source, (pluginTs as NormalizedPlugin).macros ?? []) : node
+
+    const responseType = tsResolver.response.response(tsNode)
     const [path] = getParameters(node, 'path')
     const [query] = getParameters(node, 'query')
     const [header] = getParameters(node, 'header')
-    const pathType = path ? tsResolver.param.path(node, path) : undefined
-    const queryType = query ? tsResolver.param.query(node, query) : undefined
-    const headersType = header ? tsResolver.param.headers(node, header) : undefined
-    const bodyType = content?.schema ? tsResolver.response.body(node) : undefined
+    const pathType = path ? tsResolver.param.path(tsNode, path) : undefined
+    const queryType = query ? tsResolver.param.query(tsNode, query) : undefined
+    const headersType = header ? tsResolver.param.headers(tsNode, header) : undefined
+    const bodyType = content?.schema ? tsResolver.response.body(tsNode) : undefined
     const importedTypeNames = [responseType, pathType, queryType, headersType, bodyType].filter((name) => name !== undefined)
-    const entry = { name: node.operationId, extname: '.ts', tag: node.tags[0] ?? 'default', path: node.path } as const
-    const file = resolver.file({ ...entry, root, output, group: group ?? undefined })
-    const fileTs = ctx.memo(`${pluginTsName}:operationFile:${node.operationId}`, () =>
-      tsResolver.file({ ...entry, root, output: pluginTs.options?.output ?? output, group: pluginTs.options?.group ?? undefined }),
+    const file = resolver.file({
+      name: node.operationId,
+      extname: '.ts',
+      tag: node.tags[0] ?? 'default',
+      path: node.path,
+      root,
+      output,
+      group: group ?? undefined,
+    })
+    const fileTs = ctx.memo(`${pluginTsName}:operationFile:${tsNode.operationId}`, () =>
+      tsResolver.file({
+        name: tsNode.operationId,
+        extname: '.ts',
+        tag: tsNode.tags[0] ?? 'default',
+        path: tsNode.path,
+        root,
+        output: pluginTs.options?.output ?? output,
+        group: pluginTs.options?.group ?? undefined,
+      }),
     )
 
     return (

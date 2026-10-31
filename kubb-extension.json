@@ -1,0 +1,13 @@
+{
+  "$schema": "https://kubb.dev/schemas/kubb-extension.json",
+  "kind": "plugin",
+  "name": "plugin-playwright",
+  "export": "pluginPlaywright",
+  "displayName": "Playwright",
+  "description": "Generates a typed Playwright request helper per OpenAPI operation.",
+  "dependencies": ["plugin-ts"],
+  "compatibility": {
+    "kubb": ">=5.15.0",
+    "node": ">=22.22"
+  }
+}

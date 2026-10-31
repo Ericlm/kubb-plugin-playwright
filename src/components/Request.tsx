@@ -1,5 +1,5 @@
-import { File, Function, type KubbReactNode } from 'kubb/jsx'
-import type { ast } from 'kubb/kit'
+import { File, Function, type KubbReactNode } from '@kubb/renderer-jsx'
+import type { ast } from '@kubb/kit'
 import { getParameters } from '../utils/parameters.ts'
 
 type Props = {

@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { buffer } from 'node:stream/consumers'
 import { type APIRequestContext, request as playwright } from '@playwright/test'
 import { expect, expectTypeOf, test as baseTest } from 'vitest'
-import type { Pet, PetError } from './gen/types'
+import type { Pet } from './gen/types'
 import { pwAddPet, pwDeletePet, pwGetPetById, pwUpdatePetDetails, pwUploadPetPhoto } from './gen/playwright'
 
 type ReceivedRequest = {
@@ -81,7 +81,7 @@ test('uses the context baseURL with optional groups omitted', async ({ petStore:
   expect(received().url).toBe('/pets/123')
   expect(received().headers['x-attempt']).toBeUndefined()
   expect(new URL(response.url()).pathname).toBe('/pets/123')
-  expectTypeOf(await response.json()).toEqualTypeOf<Pet | PetError>()
+  expectTypeOf(await response.json()).toEqualTypeOf<Pet>()
 })
 
 test('lets Playwright serialize JSON and exposes the native response', async ({ petStore: { request, received } }) => {

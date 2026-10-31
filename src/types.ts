@@ -1,4 +1,4 @@
-import type { ast, Exclude, Group, Include, Output, OutputOptions, Override, PluginFactoryOptions, Resolver, ResolverPatch } from 'kubb/kit'
+import type { ast, Exclude, Group, Include, Output, OutputOptions, Override, PluginType, Resolver, ResolverPatch } from '@kubb/kit'
 
 /**
  * Naming and file resolution for Playwright helpers.
@@ -40,22 +40,21 @@ export type Options = OutputOptions & {
 }
 
 /**
- * Options passed to generators after applying defaults and normalizing grouping.
+ * Options passed to generators after applying defaults.
  */
 export type ResolvedOptions = {
   output: Output
   group: Group | null
   exclude: Array<Exclude>
-  include: Options['include']
+  include: Array<Include> | undefined
   override: Array<Override<ResolvedOptions>>
   baseURL: Options['baseURL']
-  resolver: ResolverPlaywright
 }
 
 /**
  * Registers the Playwright plugin with its resolved generation options.
  */
-export type PluginPlaywright = PluginFactoryOptions<'plugin-playwright', Options, ResolvedOptions, ResolverPlaywright>
+export type PluginPlaywright = PluginType<'plugin-playwright', Options, ResolvedOptions, ResolverPlaywright>
 
 declare global {
   namespace Kubb {

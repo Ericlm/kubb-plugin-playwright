@@ -4,8 +4,8 @@ import { pluginTs } from '@kubb/plugin-ts'
 import { defineConfig } from 'kubb/config'
 
 export default defineConfig({
-  input: './tests/petstore/petStore.yaml',
+  input: './petStore.yaml',
   adapter: adapterOas(),
-  output: { path: './tests/petstore/gen' },
+  output: { path: './gen' },
   plugins: [pluginTs(), pluginPlaywright()],
 })

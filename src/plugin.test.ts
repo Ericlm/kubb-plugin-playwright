@@ -3,10 +3,10 @@ import { join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { pluginTs } from '@kubb/plugin-ts'
 import { createKubb, defineConfig } from 'kubb'
-import { ast, Diagnostics } from 'kubb/kit'
+import { ast, Diagnostics } from '@kubb/kit'
 import ts from 'typescript'
 import { expect, onTestFinished, test, vi } from 'vitest'
-import { format } from '#mocks'
+import { format } from '../tests/format.ts'
 import { type Options, pluginPlaywright } from './index.ts'
 
 const responses = {
